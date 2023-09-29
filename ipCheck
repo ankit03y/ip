@@ -1,0 +1,227 @@
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
+
+def condition = "GOOD"
+def severity = "GOOD"
+def summary = ""
+def detail = ""
+
+def headerRule = PROPERTIES["PUBG_HEADER_RULE"]
+
+def serviceApplicationMap = INPUTS["SERVICE_APPLICATION_MAP"]
+def finalMap = INPUTS["FINAL_MAP"]
+def testFinalMap = INPUTS["TEST_FINAL_MAP"]
+try {
+    detail += "\ntestFinalMap: " + testFinalMap
+    def headerRuleArr = headerRule.split(',')
+    // Convert the array to a set
+    def headerRuleSet = new HashSet<String>()
+    headerRuleSet.addAll(headerRuleArr)
+    detail += "\nHeader Rule Set: $headerRuleSet"
+
+    serviceApplicationMap.each { application, ipSet ->
+        def lowerCaseApplication = application.toLowerCase()
+        detail += "\napplication : " + lowerCaseApplication
+        //detail+="\nIPSET : " + ipSet
+        if (headerRuleSet.any { rule -> rule.toLowerCase().contains(lowerCaseApplication) }) {
+            for (def rule : headerRuleSet) {
+                if (rule.toLowerCase().contains(lowerCaseApplication)) {
+                    // Extract the second part of the rule
+                    def secondPart = rule.split(':')[1].trim()
+                    //detail+="\nFound lowerCaseApplication: "+lowerCaseApplication
+                    if (!secondPart.contains("~")) {
+                        detail += "\nsecondPart: " + secondPart
+                        //secondPart is key for finalMap     
+                        def ipList = finalMap[secondPart]
+                        detail += "\nipList: " + ipList
+                        //ipSet from service application
+                        for (def ipAddress : ipSet) {
+                            detail += "\nipAddress: " + ipAddress
+                            //ipList from finalMap
+                            for (def ip : ipList) {
+                                detail += "\nip : " + ip
+
+                                if (isIPv4(ipAddress)) {
+                                    detail += "$ipAddress is IPv4"
+                                    def ans = isIPv4InRange(ip, ipAddress)
+                                    detail += "\n$ipAddress is : " + ans
+
+                                } else if (isIPv6(ipAddress)) {
+
+                                    detail += "$ipAddress is IPv6"
+                                    def ans = isIPv6InRange(ip, ipAddress)
+                                    detail += "\n$ipAddress is : " + ans
+
+                                } else {
+                                    detail += "$ipAddress is neither IPv4 nor IPv6"
+                                }
+
+                            }
+
+                        }
+                    } else if (secondPart.contains("~")) {
+                        detail += "\nsecondPart: " + secondPart
+                        def data = secondPart.split("~")
+                        for (def element : data) {
+                            //element is key to use for finalMap
+                            def ipList = finalMap[element]
+                            //ipSet from service application
+                            for (def ipAddress : ipSet) {
+                                //ipList from finalMap
+                                for (def ip : ipList) {
+                                    detail += "\nip : " + ip
+                                    if (isIPv4(ipAddress)) {
+                                        detail += "\n$ipAddress is IPv4"
+                                        if (ip.contains("/")) {
+                                            def ans = isIPv4InRange(ip, ipAddress)
+                                            detail += "\n$ipAddress is : " + ans
+                                        }
+
+                                    } else if (isIPv6(ipAddress)) {
+                                        if (ip.contains("/")) {
+                                            detail += "$ipAddress is IPv6"
+                                            def ans = isIPv6InRange(ip, ipAddress)
+                                            detail += "\n$ipAddress is : " + ans
+                                        }
+
+                                    } else {
+                                        detail += "$ipAddress is neither IPv4 nor IPv6"
+                                    }
+
+                                }
+
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+} catch (Exception e) {
+    condition = "bad"
+    severity = "critical"
+    summary = 'Exception Thrown : ' + e
+    detail += "<==FAIL==> " + e.getClass() + ": " + e.getMessage()
+    for (trace in e.getStackTrace()) {
+        detail += "\n\t" + trace
+    }
+    def nested = e.getCause()
+    while (nested != null) {
+        detail += "\ncaused by " + nested.getClass() + ": " + nested.getMessage()
+        for (trace in nested.getStackTrace()) {
+            detail += "\n\t" + trace
+        }
+        nested = nested.getCause()
+    }
+}
+
+RESULT.condition = condition
+RESULT.severity = severity
+RESULT.summary = summary
+RESULT.detail = detail
+
+/*============================================================================================================================================*/
+
+def isIPv4InRange(subnet, givenIPv4) {
+
+    def parts = subnet.split("/")
+    def baseAddress = parts[0]
+    def prefixLength = parts[1] as Integer
+
+    def numAddresses = 2 ** (32 - prefixLength)
+    def subnetValue = ipToInteger(baseAddress)
+
+    def firstAddressValue = subnetValue
+    def lastAddressValue = subnetValue + numAddresses - 1
+
+    def givenAddressValue = ipToInteger(givenIPv4)
+
+    def firstAddress = integerToIp(firstAddressValue)
+    def lastAddress = integerToIp(lastAddressValue)
+
+    def isInRange = givenAddressValue >= firstAddressValue && givenAddressValue <= lastAddressValue
+
+    detail += "\nFirst IPv4 Address: ${firstAddress}"
+    detail += "\nLast IPv4 Address: ${lastAddress}"
+    detail += "\n${givenIPv4} is within the range: ${isInRange}"
+
+    return isInRange
+}
+
+def ipToInteger(ip) {
+    def parts = ip.split("\\.")
+    def value = 0
+    parts.eachWithIndex { octet, index ->
+        value += octet.toInteger() << (8 * (3 - index))
+    }
+    return value
+}
+
+def integerToIp(value) {
+    def ip = []
+    4.times { i ->
+        ip.add((value >> (8 * (3 - i)) & 0xFF).toString())
+    }
+    return ip.join(".")
+}
+
+/*==========================================================================================================================================*/
+
+def isIPv6InRange(subnet, givenIPv6) {
+    // Split the subnet into base address and prefix length
+    def parts = subnet.split("/")
+    def baseAddress = parts[0]
+    def prefixLength = parts[1].toInteger()
+
+    // Get the InetAddress representation of the subnet
+    def subnetAddress = InetAddress.getByName(baseAddress) as Inet6Address
+
+    // Calculate the number of possible addresses in the subnet
+    def numAddresses = 2 ** (128 - prefixLength)
+
+    // Convert the subnet address to a BigInteger
+    def subnetBigInt = new BigInteger(1, subnetAddress.address)
+
+    // Calculate the first and last addresses in the subnet
+    def firstAddressBigInt = subnetBigInt
+    def lastAddressBigInt = subnetBigInt + numAddresses - 1
+
+    // Convert them back to Inet6Address objects for formatting
+    def firstAddress = InetAddress.getByAddress(firstAddressBigInt.toByteArray()) as Inet6Address
+    def lastAddress = InetAddress.getByAddress(lastAddressBigInt.toByteArray()) as Inet6Address
+
+    // Convert the given IPv6 address to InetAddress
+    def givenAddress = InetAddress.getByName(givenIPv6) as Inet6Address
+
+    // Check if the given IPv6 address is within the range
+    def isInRange = isIPv6InRange(givenAddress, firstAddress, lastAddress)
+
+    // Build the detail string with information
+    detail += "\nFirst IPv6 Address: ${firstAddress.getHostAddress()}"
+    detail += "\nLast IPv6 Address: ${lastAddress.getHostAddress()}"
+    detail += "\n${givenIPv6} is within the range: ${isInRange}"
+
+    return isInRange;
+}
+
+// Function to check if an IPv6 address is within a range
+def isIPv6InRange(givenAddress, startAddress, endAddress) {
+    def givenBigInt = new BigInteger(1, givenAddress.address)
+    def startBigInt = new BigInteger(1, startAddress.address)
+    def endBigInt = new BigInteger(1, endAddress.address)
+    return (givenBigInt.compareTo(startBigInt) >= 0 && givenBigInt.compareTo(endBigInt) <= 0)
+}
+
+def isIPv4(ip) {
+    // Regular expression to match IPv4 address
+    def ipv4Pattern = ~/^(\d{1,3}\.){3}\d{1,3}$/
+    return ipv4Pattern.matcher(ip).matches()
+}
+
+def isIPv6(ip) {
+    // Regular expression to match IPv6 address
+    def ipv6Pattern = ~/(^|:)([0-9a-fA-F]{0,4}:)+[0-9a-fA-F]{0,4}(:|$)/
+    return ipv6Pattern.matcher(ip).matches()
+}
